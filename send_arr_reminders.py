@@ -37,7 +37,7 @@ def get_gmail_service():
     return build('gmail', 'v1', credentials=creds)
 
 
-def get_missing_reviewers_emails(or_client, venue_id, ac_profile_id):
+def get_missing_reviewers_emails(or_client, venue_id, ac_profile_id, pending=False):
     # 1. Find all submissions where you are an assigned Area Chair.
     ac_groups = or_client.get_groups(prefix=f'{venue_id}', member=ac_profile_id)
     ac_groups = [g for g in ac_groups if g.id.endswith('/Area_Chairs') and 'Submission' in g.id]
@@ -54,25 +54,32 @@ def get_missing_reviewers_emails(or_client, venue_id, ac_profile_id):
         print(f"Getting missing reviewers for submission {number}...")
 
         # 2. Get the reviewers assigned to this paper (real profile IDs)
+        submission = or_client.get_notes(invitation=f'{venue_id}/-/Submission', number=number)[0]
         reviewer_group = or_client.get_group(f'{venue_id}/Submission{number}/Reviewers')
         assigned_reviewers = set(reviewer_group.members)
 
-        # 3. Get submitted Official Reviews for this paper
-        submission = or_client.get_notes(invitation=f'{venue_id}/-/Submission', number=number)[0]
-        reviews = or_client.get_notes(
-            forum=submission.id,
-            invitation=f'{venue_id}/Submission{number}/-/Official_Review'
-        )
+        if pending:
+            # Check for invited who haven't responded
+            invite_edges = or_client.get_edges(invitation=f'{venue_id}/Reviewers/-/Invite_Assignment', head=submission.id)
+            invite_edges = [e for e in invite_edges if e.label == 'Invitation Sent']
+            missing_reviewers = [e.tail for e in invite_edges]
 
-        # Resolve each review's anon signature back to a real profile ID
-        reviewers_who_submitted = set()
-        for r in reviews:
-            anon_id = r.signatures[0]  # e.g. .../Submission12345/Reviewer_XXXX
-            anon_group = or_client.get_group(anon_id)
-            reviewers_who_submitted.update(anon_group.members)  # real profile id(s)
+        else:
+            # 3. Get submitted Official Reviews for this paper
+            reviews = or_client.get_notes(
+                forum=submission.id,
+                invitation=f'{venue_id}/Submission{number}/-/Official_Review'
+            )
 
-        # 4. Anyone assigned but not in the "submitted" set is missing a review
-        missing_reviewers = assigned_reviewers - reviewers_who_submitted
+            # Resolve each review's anon signature back to a real profile ID
+            reviewers_who_submitted = set()
+            for r in reviews:
+                anon_id = r.signatures[0]  # e.g. .../Submission12345/Reviewer_XXXX
+                anon_group = or_client.get_group(anon_id)
+                reviewers_who_submitted.update(anon_group.members)  # real profile id(s)
+
+            # 4. Anyone assigned but not in the "submitted" set is missing a review
+            missing_reviewers = assigned_reviewers - reviewers_who_submitted
 
         for real_id in missing_reviewers:
             profile = openreview.tools.get_profiles(or_client, [real_id], with_publications=False, with_preferred_emails=(venue_id + '/-/Preferred_Emails'))[0]
@@ -116,18 +123,32 @@ def main():
     AC_PROFILE_ID = '~Ondrej_Dusek1'        # your OpenReview profile id
 
     VENUE_ID = 'aclweb.org/ACL/ARR/2026/May'          # e.g. 'ICLR.cc/2026/Conference'
-    SUBJECT = 'Your ARR May (EMNLP/AACL) Review for submission {paper_id} is due'
+#    SUBJECT = 'Your ARR May (EMNLP/AACL) Review for submission {paper_id} is due'
+    SUBJECT = "ARR May emergency reviewer invite"
+    PENDING = True
+#    BODY = '''Dear {author},
+
+#I'm your Area Chair for ARR May, and I'm still missing a review from you. Please check OpenReview and finish your review as soon as possible:
+
+#https://openreview.net/group?id={venue_id}/Reviewers
+
+#The deadline is today AoE, i.e., in about 30 minutes. Please either enter a delay notification on OpenReview or respond to this email and let me know your status in case you're not able to finish the review in the next few hours.
+
+#Thanks,
+#Ondrej Dusek
+#(odusek@ufal.mff.cuni.cz)'''
     BODY = '''Dear {author},
 
-I'm your Area Chair for ARR May, and I'm still missing a review from you. Please check OpenReview and finish your review as soon as possible:
+I'm looking for emergency reviewers and sent you an invite for a paper, since you appear to be a good match and below your maximum load. Would you be able to review the paper? Please
+let me know as soon as possible.
 
+You should have an invite email from OpenReview, and the paper should be visible at
 https://openreview.net/group?id={venue_id}/Reviewers
 
-The deadline is today AoE, i.e., in about 30 minutes. Please either enter a delay notification on OpenReview or respond to this email and let me know your status in case you're not able to finish the review in the next few hours.
-
 Thanks,
-Ondrej Dusek
+Ondrej Dusek, ARR AC
 (odusek@ufal.mff.cuni.cz)'''
+
 
     print("Authenticating with Gmail...")
     service = get_gmail_service()
@@ -137,7 +158,7 @@ Ondrej Dusek
     or_client = openreview.api.OpenReviewClient(baseurl="https://api2.openreview.net", username=USERNAME, password=PASSWORD)
 
     print("Fetching OR papers...")
-    missing_reviewers = get_missing_reviewers_emails(or_client, VENUE_ID, AC_PROFILE_ID)
+    missing_reviewers = get_missing_reviewers_emails(or_client, VENUE_ID, AC_PROFILE_ID, PENDING)
 
     for reviewer in missing_reviewers:
 
